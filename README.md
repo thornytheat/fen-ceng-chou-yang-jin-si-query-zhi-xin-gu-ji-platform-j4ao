@@ -34,7 +34,8 @@
 2. **抽样方案编辑**：输入置信度 + 目标误差 → 后端算法给出总样本量、每层 n_h、Neyman 权重、预计 CI、层容量约束；草稿须 admin 审批。
 3. **近似查询**：按方案抽行 → HT 点估计 + 有限总体校正方差 + 95% CI，并现场执行同口径全量聚合做对照；输出各层贡献、方差占比、耗时与提速。
 4. **精度自检**：相对误差 / CI 宽度 / 层最小样本 / 覆盖率 / 提速比五项检查，给出达标结论；三角色复核链（分析师提交 → 负责人复核 → 业务方知悉）完成后可导出。
-5. **导出估算说明 Markdown**：含方案参数、点估计与 CI、全量真值对照、各层贡献表、检查项与复核链。
+5. **未达标补样（只补未达标层，不重建方案）**：自检未达标时，已达标层已抽样本原样保留，仅对未达标层按 `sample_rank` 顺序从原数据补入**从未使用**的行；未用样本容量仍不足则在写入任何样本前直接拒绝（`TOPUP_CAPACITY`，409）。补样后生成查询**新版本**，重算 HT 点估计与置信区间并重跑三级复核；旧版本整行只读保留，版本链可查替代关系。
+6. **导出估算说明 Markdown**：含方案参数、点估计与 CI、全量真值对照、各层贡献表、补样记录、检查项与复核链；**仅最新版本且三签复核通过可导出**，页面、自检、导出三处口径一致。
 
 ## 4. 算法（后端 Python 真算，前端只展示）
 
@@ -68,6 +69,17 @@ CI      = Ŷ ± z·√V,   相对误差 = z·√V / Ŷ
 - 方案未审批就查询 → `PLAN_NOT_ACTIVE`（409）。
 - 层容量不足 / 先验 S_h 缺失 → 返回 `capacity_warning`，算法降级但不静默。
 - 复核链顺序错误 / 角色不符 → `QC_ORDER` / `FORBIDDEN`（409 / 403）。
+- 补样时未用样本不足以补足未达标层 → `TOPUP_CAPACITY`（409），补样单置 `rejected`，不产生任何新样本或结果。
+- 对已达标版本补样 → `TOPUP_NOT_NEEDED`（409）；对已被替代的历史版本操作 → `REVISION_SUPERSEDED`（409）。
+- 导出非最新版本，或最新版本自检未达标 / 复核未三签 → `EXPORT_NOT_READY`（409）。
+
+### 补样与版本化（`backend/src/services/topup_service.py` + `topup_planning.py`）
+
+- **只补未达标层**：通过的层 `add=0`、已抽样本不动；未达标层目标样本量取 `max(最小层样本 30, 按 CI 超标比例 (实测/目标)² 放大的量)`，且不超过层容量 N_h。
+- **只取未用样本**：层内已抽 `sample_rank` 最小的 `had` 行，补样用 `LIMIT add OFFSET had` 取其后的行，天然不会重复抽取，且与确定性抽样口径一致。
+- **容量闸门前置**：纯函数 `plan_stratum_topups` 先算每层「未用余量 = N_h − had」，任一层 `add > 余量` 即 `feasible=False`，在落库前拒绝。
+- **幂等与续跑**：补样单 `sample_topups` 以 `idempotency_key`（查询版本 + 每层目标量的哈希）唯一；重跑同一请求回放同一补样单，不新增样本/结果。`running` 单中断后凭幂等键续跑（`attempt_count` 累加），`done/rejected` 直接回放结论。
+- **版本链**：`approx_queries` 以 `root_query_id / revision_no / is_latest / superseded_by_id` 串链；新版本重算点估计与 CI、各自一条 `qc_checks` 并重置复核链，旧版本复核链冻结为 `superseded`。
 
 ## 5. 快速启动
 
@@ -97,7 +109,7 @@ SEED_SUMMARY brand=sampleaqp datasets=3 strata=5 rows=120000 plans=2 users=3
 2. `analyst@sampleaqp.io` → 抽样方案：置信 95% / 目标误差 2% / Neyman → 生成草稿 `n=2,742`，5 层分配 `[820, 690, 540, 410, 282]`。
 3. `admin` 审批该方案（`PLAN-001` 已由 seed 审批，可直接用）。
 4. `analyst` → 近似查询：点估计 **¥18,264,926.85**，95% CI **±1.87%**；与真值相对误差 **0.20%**（标准 ≤2%，达标）。
-5. 二次方案：目标误差 5% → `n=438`，CI **±4.58%** > 2% 标准 → 自检判 **未达标**（提醒提高置信或降低误差）。
+5. 二次方案：目标误差 5% → `n=438`，CI **±4.58%** > 2% 标准 → 自检判 **未达标**；此时不重建方案，在自检页点「对未达标层补样」，仅未达标层从原数据补入未用样本并生成新版本（容量不足则拒绝），新版本重算点估计/CI 并重走三级复核。
 6. 精度自检：分析师提交 → 负责人复核 → 业务方知悉，三签完成后导出 `sampleaqp-estimate-AQ-*.md`。
 
 ## 7. 技术栈
@@ -119,14 +131,14 @@ gb-583/
 ├── .env.example
 ├── backend/
 │   ├── Dockerfile / requirements.txt
-│   ├── migrations/             # 0001_initial.sql（与 ORM 对齐）
+│   ├── migrations/             # 0001_initial.sql（基线）/ 0002_topup_versioning.sql（版本链+补样单，幂等增量）
 │   ├── scripts/                # seed_demo.py / demo_config.py / worker_healthcheck.sh
 │   └── src/
 │       ├── config/             # settings / database / celery_app / app
 │       ├── constants/          # roles / enums / limits / error_codes
-│       ├── models/             # user / dataset / waybill / sample_plan / approx_query / qc_check / audit
+│       ├── models/             # user / dataset / waybill / sample_plan / approx_query(版本链) / qc_check / sample_topup(补样单) / audit
 │       ├── schemas/            # auth / dataset / plan / query / qc / common
-│       ├── services/           # sampling / estimation / dataset / plan / query / qc / export / audit / auth
+│       ├── services/           # sampling / estimation / dataset / plan / query / qc / topup(补样编排) / topup_planning(纯函数) / export / audit / auth
 │       ├── controllers/        # 薄控制器
 │       ├── routes/             # /api/*（health/auth/datasets/plans/queries/qc/audit）
 │       ├── middlewares/        # auth / rbac / rate_limit / audit_logger / error_handler
@@ -179,7 +191,7 @@ gb-583/
 |---|---|---|
 | `Role`（admin/analyst/viewer） | `backend/src/constants/roles.py` | `frontend/src/constants/roles.ts` + `types/models.ts` |
 | `AllocationMethod` / `PlanStatus` / `QueryStatus` | `backend/src/constants/enums.py` | `frontend/src/constants/enums.ts` |
-| `QcVerdict` / `ReviewState` / `SignoffStage` | `backend/src/constants/enums.py` | `frontend/src/constants/enums.ts` + `pages/Qc.tsx` |
+| `QcVerdict` / `ReviewState` / `SignoffStage` / `TopupStatus` / `QueryStatus` | `backend/src/constants/enums.py` | `frontend/src/constants/enums.ts` + `pages/Qc.tsx` |
 | `CheckCode`（五项检查） | `backend/src/constants/enums.py` | `frontend/src/constants/enums.ts`（`CHECK_HINTS`） |
 
 ## 12. License

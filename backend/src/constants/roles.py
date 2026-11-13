@@ -31,6 +31,7 @@ PERMISSIONS: dict[str, set[str]] = {
         "qc:read",
         "qc:run",
         "qc:signoff",
+        "qc:topup",
         "audit:read",
         "export:read",
     },
@@ -43,6 +44,7 @@ PERMISSIONS: dict[str, set[str]] = {
         "qc:read",
         "qc:run",
         "qc:signoff",
+        "qc:topup",
         "export:read",
     },
     Role.VIEWER.value: {

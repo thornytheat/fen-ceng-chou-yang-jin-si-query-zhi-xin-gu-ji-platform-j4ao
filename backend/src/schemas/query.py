@@ -15,12 +15,23 @@ class StratumContributionOut(BaseModel):
     label: str
     population: int
     sample_size: int
+    topped_up: int = 0
     sample_mean: float
     contribution: float
     ci_half: float
     contribution_share_pct: float
     variance_share_pct: float
     verified: bool
+
+
+class RevisionChainItem(BaseModel):
+    id: int
+    code: str
+    revision_no: int
+    is_latest: bool
+    status: str
+    sample_size: int
+    rel_error_pct: float
 
 
 class QueryOut(BaseModel):
@@ -34,6 +45,13 @@ class QueryOut(BaseModel):
     metric_label: str
     unit: str
     filter_strata: list[str]
+    revision_no: int
+    root_query_id: int
+    is_latest: bool
+    superseded_by_id: int | None = None
+    status: str
+    status_label: str
+    revision_chain: list[RevisionChainItem] = []
     sample_size: int
     value_estimate: float
     ci_low: float
@@ -46,9 +64,10 @@ class QueryOut(BaseModel):
     sample_ms: float
     truth_ms: float
     full_scan_baseline_ms: int
-    status: str
     run_by: str
     created_at: str
     strata_detail: list[StratumContributionOut]
     qc_id: int | None = None
     qc_verdict: str | None = None
+    qc_review_state: str | None = None
+    exportable: bool = False

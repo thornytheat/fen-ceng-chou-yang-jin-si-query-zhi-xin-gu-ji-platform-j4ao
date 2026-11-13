@@ -24,6 +24,8 @@ class PlanStatus(StrEnum):
 
 class QueryStatus(StrEnum):
     COMPLETED = "completed"
+    REPLENISHING = "replenishing"  # 自检未达标，补样进行中（可续跑，不新增样本）
+    SUPERSEDED = "superseded"      # 已被补样后的新版本替代，只读保留
     FAILED = "failed"
 
 
@@ -35,6 +37,13 @@ class QcVerdict(StrEnum):
 class ReviewState(StrEnum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
+    SUPERSEDED = "superseded"  # 所在查询版本已被补样新版本替代，复核链随之冻结
+
+
+class TopupStatus(StrEnum):
+    RUNNING = "running"    # 补样单进行中：中断后凭同一幂等键续跑
+    DONE = "done"          # 补样完成，新版本已生成
+    REJECTED = "rejected"  # 未用样本容量不足，拒绝补样（不产生任何新样本/结果）
 
 
 class SignoffStage(StrEnum):
@@ -69,6 +78,20 @@ QC_VERDICT_LABELS: dict[str, str] = {
 REVIEW_STATE_LABELS: dict[str, str] = {
     ReviewState.PENDING.value: "待签",
     ReviewState.CONFIRMED.value: "三签完成",
+    ReviewState.SUPERSEDED.value: "版本已替代",
+}
+
+QUERY_STATUS_LABELS: dict[str, str] = {
+    QueryStatus.COMPLETED.value: "已完成",
+    QueryStatus.REPLENISHING.value: "补样中",
+    QueryStatus.SUPERSEDED.value: "已替代",
+    QueryStatus.FAILED.value: "失败",
+}
+
+TOPUP_STATUS_LABELS: dict[str, str] = {
+    TopupStatus.RUNNING.value: "补样中",
+    TopupStatus.DONE.value: "补样完成",
+    TopupStatus.REJECTED.value: "容量不足已拒绝",
 }
 
 CONFIDENCE_CHOICES: tuple[float, ...] = (0.80, 0.90, 0.95, 0.99)

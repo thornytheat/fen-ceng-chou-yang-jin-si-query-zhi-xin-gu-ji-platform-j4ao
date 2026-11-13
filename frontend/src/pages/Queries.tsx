@@ -10,6 +10,7 @@ import { queryStore } from '../stores/queryStore';
 import { datasetApi } from '../api/datasets';
 import { queryApi } from '../api/queries';
 import { can } from '../constants/roles';
+import { errorMessage } from '../utils/errorMessage';
 import StatTile from '../components/common/StatTile';
 import RangeBar from '../components/common/RangeBar';
 import CiPlot from '../components/common/CiPlot';
@@ -75,16 +76,21 @@ export default function Queries() {
   });
 
   const exportMd = useAsync(async (id: number) => {
-    const markdown = await queryApi.exportMarkdown(id);
-    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `sampleaqp-estimate-${id}.md`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    toast.ok('估算说明 Markdown 已导出');
-    return markdown;
+    try {
+      const markdown = await queryApi.exportMarkdown(id);
+      const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `sampleaqp-estimate-${id}.md`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      toast.ok('估算说明 Markdown 已导出');
+      return markdown;
+    } catch (error) {
+      toast.error(errorMessage(error));
+      throw error;
+    }
   });
 
   const selected = queries.selected;
@@ -206,11 +212,29 @@ export default function Queries() {
                 </div>
                 <div className="panel-actions">
                   <VerdictPill verdict={selected.qc_verdict ?? 'pending'} label={selected.qc_verdict ? undefined : '未自检'} size="sm" />
-                  <button className="btn btn-sm" disabled={exportMd.busy} onClick={() => void exportMd.run(selected.id)}>
+                  <button
+                    className="btn btn-sm"
+                    disabled={exportMd.busy || !selected.exportable}
+                    title={selected.exportable ? '' : '仅最新且三签复核通过的版本可导出'}
+                    onClick={() => void exportMd.run(selected.id)}
+                  >
                     导出估算说明
                   </button>
                 </div>
               </div>
+
+              {!selected.is_latest || selected.revision_chain.length > 1 ? (
+                <div className="revision-banner">
+                  <span className={`version-badge ${selected.is_latest ? 'is-latest' : 'is-superseded'}`}>
+                    {selected.is_latest ? `最新版本 v${selected.revision_no}` : `历史版本 v${selected.revision_no}（已替代，只读留档）`}
+                  </span>
+                  {selected.revision_chain.length > 1 ? (
+                    <span className="tiny muted">
+                      版本链：{selected.revision_chain.map((item) => `${item.code}(v${item.revision_no})`).join(' → ')}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
 
               <div className="estimate-hero">
                 <div className="estimate-main">
@@ -290,6 +314,7 @@ export default function Queries() {
                       <tr key={row.code}>
                         <td>
                           {row.label} <span className="mono tiny muted">{row.code}</span>
+                          {row.topped_up > 0 ? <span className="topup-chip">补样 +{row.topped_up}</span> : null}
                         </td>
                         <td className="num mono">{formatInt(row.population)}</td>
                         <td className="num mono">{formatInt(row.sample_size)}</td>
@@ -329,6 +354,7 @@ export default function Queries() {
               <thead>
                 <tr>
                   <th>编号</th>
+                  <th>版本</th>
                   <th>方案</th>
                   <th className="num">样本</th>
                   <th className="num">点估计</th>
@@ -337,12 +363,21 @@ export default function Queries() {
                   <th className="num">相对误差</th>
                   <th className="num">耗时</th>
                   <th>自检</th>
+                  <th>导出</th>
                 </tr>
               </thead>
               <tbody>
                 {queries.items.map((row) => (
-                  <tr key={row.id} className="row-clickable" onClick={() => void queryStore.select(row.id)}>
+                  <tr
+                    key={row.id}
+                    className={`row-clickable ${row.is_latest ? '' : 'is-superseded-row'}`}
+                    onClick={() => void queryStore.select(row.id)}
+                  >
                     <td className="mono">{row.code}</td>
+                    <td className="mono tiny">
+                      v{row.revision_no}
+                      {row.is_latest ? '' : ' · 已替代'}
+                    </td>
                     <td>{row.plan_name}</td>
                     <td className="num mono">{formatInt(row.sample_size)}</td>
                     <td className="num mono">{formatMetric(row.value_estimate, unit, scale)}</td>
@@ -353,6 +388,7 @@ export default function Queries() {
                     <td>
                       <VerdictPill verdict={row.qc_verdict ?? 'pending'} label={row.qc_verdict ? undefined : '未自检'} size="sm" />
                     </td>
+                    <td className="tiny">{row.exportable ? '可导出' : '不可导出'}</td>
                   </tr>
                 ))}
               </tbody>

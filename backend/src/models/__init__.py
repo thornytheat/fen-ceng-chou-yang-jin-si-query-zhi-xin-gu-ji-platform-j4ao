@@ -21,6 +21,7 @@ from src.models.audit import AuditLog  # noqa: E402
 from src.models.dataset import Dataset, DatasetStratum  # noqa: E402
 from src.models.qc_check import QcCheck  # noqa: E402
 from src.models.sample_plan import SamplePlan  # noqa: E402
+from src.models.sample_topup import SampleTopup  # noqa: E402
 from src.models.user import User  # noqa: E402
 from src.models.waybill import Waybill  # noqa: E402
 
@@ -32,6 +33,7 @@ __all__ = [
     "DatasetStratum",
     "QcCheck",
     "SamplePlan",
+    "SampleTopup",
     "User",
     "Waybill",
     "TimestampMixin",

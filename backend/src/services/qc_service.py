@@ -100,14 +100,21 @@ def _build_checks(db: Session, query, target_pct: float) -> tuple[list[dict], st
 
 def run_check(db: Session, query_id: int, target_pct: float | None, actor: dict, ip: str | None = None) -> QcCheck:
     query = query_service.get_query(db, query_id)
+    if not query.is_latest:
+        # 历史版本只读保留，自检以最新版本为准；防止在旧版上改判造成页面/导出口径不一致。
+        raise AppError("REVISION_SUPERSEDED", 409, detail="该版本已被替代，不能重跑自检")
     dataset = query.dataset
     target = round(float(target_pct if target_pct is not None else dataset.precision_target_pct), 2)
     checks, verdict, min_sample, coverage = _build_checks(db, query, target)
-    existing = db.scalar(select(QcCheck).where(QcCheck.query_id == query.id))
+    revision_no = int(query.revision_no or 1)
+    existing = db.scalar(
+        select(QcCheck).where(QcCheck.query_id == query.id, QcCheck.revision_no == revision_no)
+    )
     if existing is None:
         existing = QcCheck(
             query_id=query.id,
             code=f"QC-{query.code}",
+            revision_no=revision_no,
             target_pct=target,
             rel_error_pct=query.truth_rel_error_pct,
             ci_pct=query.rel_error_pct,
@@ -172,6 +179,8 @@ def sign_off(db: Session, qc_id: int, stage: str, decision: str, note: str | Non
     expected = next_stage(qc)
     if expected is None:
         raise AppError("QC_DUPLICATE_SIGNOFF", 409, detail="review chain already complete")
+    if qc.review_state == ReviewState.SUPERSEDED.value:
+        raise AppError("REVISION_SUPERSEDED", 409, detail="该版本已被补样新版本替代，复核链已冻结")
     if stage_value != expected:
         raise AppError("QC_ORDER", 409, detail=f"expected stage={expected}")
     entry = {
@@ -212,6 +221,9 @@ def qc_out(db: Session, qc: QcCheck) -> dict:
         "code": qc.code,
         "query_id": qc.query_id,
         "query_code": query.code,
+        "revision_no": int(qc.revision_no or 1),
+        "is_latest": bool(query.is_latest),
+        "superseded_by_id": query.superseded_by_id,
         "dataset_name": dataset.name,
         "metric_label": dataset.metric_label,
         "target_pct": float(qc.target_pct),
@@ -232,4 +244,7 @@ def qc_out(db: Session, qc: QcCheck) -> dict:
         "value_estimate": round(query.value_estimate_minor / scale, 2),
         "true_value": round(query.truth_total_minor / scale, 2),
         "unit": dataset.unit,
+        "exportable": bool(
+            query.is_latest and qc.verdict == QcVerdict.PASS.value and qc.review_state == ReviewState.CONFIRMED.value
+        ),
     }

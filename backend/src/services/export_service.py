@@ -27,9 +27,12 @@ def build_estimate_markdown(query, qc=None) -> tuple[str, str]:
     speed = query.full_scan_baseline_ms / float(query.sample_ms) if float(query.sample_ms) > 0 else 0.0
 
     lines: list[str] = []
-    lines.append(f"# 近似估算说明 · {query.code}")
+    lines.append(f"# 近似估算说明 · {query.code}（第 {int(query.revision_no or 1)} 版）")
     lines.append("")
     lines.append("远舟物流 · 数据分析组 | 分层抽样近似查询（AQP）台 sampleaqp")
+    if not query.is_latest:
+        lines.append("")
+        lines.append(f"> ⚠️ 本版本已被 `{query.superseded_by_id}` 对应新版本替代，仅作历史留档，不是可对外口径。")
     lines.append("")
     lines.append("## 1. 本次估算的范围")
     lines.append("")
@@ -44,6 +47,13 @@ def build_estimate_markdown(query, qc=None) -> tuple[str, str]:
     lines.append(
         f"| 抽样口径 | {plan.method} · 置信 {float(plan.confidence_level):.0%} · 目标误差 {float(plan.target_error_pct):.2f}% · 样本 {plan.sample_size:,} 行 |"
     )
+    topped = [item for item in (query.strata_detail or []) if int(item.get("topped_up", 0) or 0) > 0]
+    if topped:
+        lines.append(
+            "| 补样记录 | 仅未达标层从原数据补入未用样本："
+            + "、".join(f"{item.get('label') or item.get('code')} +{int(item.get('topped_up'))} 行" for item in topped)
+            + "；已达标层样本原样保留 |"
+        )
     lines.append(f"| 执行人 | {query.run_by} |")
     lines.append(f"| 执行时间 | {local_iso(query.created_at)} |")
     lines.append("")
@@ -121,10 +131,11 @@ def build_estimate_markdown(query, qc=None) -> tuple[str, str]:
     lines.append("- 样本量：`n = (z·Σ N_h·S_h / (e·Y))²`，`n_h = n·N_h·S_h / Σ N_h·S_h`（Neyman）；S_h 缺失退化为比例分配，每层最小 30 行、超出层容量截断重分配。")
     lines.append("- 估计量：`Ŷ = Σ_h N_h·ȳ_h`；方差 `V = Σ_h N_h²·(1 - n_h/N_h)·s_h²/n_h`（有限总体校正）；`CI = Ŷ ± z·√V`。")
     lines.append("- 抽样实现：明细行 seed 时写入确定性 `sample_rank`，查询按每层最小 rank 取 n_h 行，同样输入永远同样样本，可复现。")
+    lines.append("- 补样口径：自检未达标不重建方案、不作废已抽层；仅对未达标层按 sample_rank 顺序补入该层尚未使用的行，未用容量不足则拒绝补样；补样后生成新版本并重算点估计/CI、重走三级复核，旧版本只读保留。")
     lines.append("- 全量真值：同一数据集、同一过滤范围的 `SUM(value_minor)` 真实全表聚合，不是写死的对照值。")
     lines.append("")
     lines.append("---")
     lines.append("")
     lines.append("由 sampleaqp 生成；示例数据为演示用配送运单明细（12 万行），生产表规模按 8,000 万行标注。")
-    filename = f"sampleaqp-estimate-{query.code}.md"
+    filename = f"sampleaqp-estimate-{query.code}-r{int(query.revision_no or 1)}.md"
     return filename, "\n".join(lines)

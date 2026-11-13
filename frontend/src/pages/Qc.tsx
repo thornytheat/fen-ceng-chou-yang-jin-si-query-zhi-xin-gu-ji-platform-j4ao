@@ -8,6 +8,7 @@ import { queryStore } from '../stores/queryStore';
 import { queryApi } from '../api/queries';
 import { SIGNOFF_STAGES } from '../constants/enums';
 import { can } from '../constants/roles';
+import { errorMessage } from '../utils/errorMessage';
 import VerdictPill from '../components/common/VerdictPill';
 import RulerBar from '../components/common/RulerBar';
 import StatTile from '../components/common/StatTile';
@@ -53,6 +54,25 @@ export default function Qc() {
     return qc;
   });
 
+  const topup = useAsync(async () => {
+    if (!selected) return null;
+    try {
+      const result = await qcStore.topup(selected.query_id);
+      if (result.status === 'rejected') {
+        toast.error(result.reject_reason ?? '未用样本容量不足，补样已拒绝（未产生新样本）');
+      } else {
+        toast.ok(result.message ?? '补样完成：已生成新版本，点估计/CI 已重算、自检已重跑');
+        await Promise.all([qcStore.load(), queryStore.load()]);
+        const newest = qcStore.getState().items.find((item) => item.query_id === result.new_query_id);
+        if (newest) qcStore.select(newest);
+      }
+      return result;
+    } catch (error) {
+      toast.error(errorMessage(error));
+      throw error;
+    }
+  });
+
   const sign = useAsync(async (stage: string) => {
     if (!selected) return null;
     const allowed = can(role, 'qc:signoff') || (can(role, 'qc:acknowledge') && stage === 'viewer');
@@ -70,16 +90,21 @@ export default function Qc() {
   });
 
   const exportMd = useAsync(async (id: number) => {
-    const markdown = await queryApi.exportMarkdown(id);
-    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `sampleaqp-estimate-${id}.md`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    toast.ok('估算说明 Markdown 已导出');
-    return markdown;
+    try {
+      const markdown = await queryApi.exportMarkdown(id);
+      const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `sampleaqp-estimate-${id}.md`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      toast.ok('估算说明 Markdown 已导出');
+      return markdown;
+    } catch (error) {
+      toast.error(errorMessage(error));
+      throw error;
+    }
   });
 
   const stageState = (stage: string) => {
@@ -88,6 +113,20 @@ export default function Qc() {
     if (selected?.next_stage === stage) return 'next';
     return 'todo';
   };
+
+  const linkedQuery = useMemo(
+    () => queries.items.find((item) => item.id === selected?.query_id) ?? null,
+    [queries.items, selected],
+  );
+  const chain = linkedQuery?.revision_chain ?? [];
+  const canTopup =
+    !!selected &&
+    selected.verdict === 'fail' &&
+    selected.is_latest &&
+    selected.review_state !== 'superseded' &&
+    can(role, 'qc:topup');
+  const chainFrozen = selected?.review_state === 'superseded' || selected?.is_latest === false;
+  const lastTopup = state.topups.find((item) => item.query_id === selected?.query_id);
 
   return (
     <div className="page">
@@ -155,11 +194,14 @@ export default function Qc() {
             {state.items.map((item) => (
               <button
                 key={item.id}
-                className={`qc-card ${selected?.id === item.id ? 'is-active' : ''}`}
+                className={`qc-card ${selected?.id === item.id ? 'is-active' : ''} ${!item.is_latest ? 'is-superseded' : ''}`}
                 onClick={() => qcStore.select(item)}
               >
                 <div className="qc-card-top">
-                  <span className="mono">{item.code}</span>
+                  <span className="mono">
+                    {item.code}
+                    <em className="revision-tag"> v{item.revision_no}{item.is_latest ? '' : ' · 已替代'}</em>
+                  </span>
                   <VerdictPill verdict={item.verdict} label={item.verdict_label} size="sm" />
                 </div>
                 <div className="qc-card-meta mono">
@@ -186,11 +228,34 @@ export default function Qc() {
                 </div>
                 <div className="panel-actions">
                   <VerdictPill verdict={selected.verdict} label={selected.verdict_label} />
-                  <button className="btn btn-sm" disabled={exportMd.busy} onClick={() => void exportMd.run(selected.query_id)}>
+                  <button
+                    className="btn btn-sm"
+                    disabled={exportMd.busy || !selected.exportable}
+                    title={selected.exportable ? '' : '仅最新且三签复核通过的版本可导出'}
+                    onClick={() => void exportMd.run(selected.query_id)}
+                  >
                     导出估算说明
                   </button>
                 </div>
               </div>
+
+              {chain.length > 1 ? (
+                <div className="revision-chain" data-testid="revision-chain">
+                  <span className="tiny muted">版本替代关系（旧版只读保留，仅最新版可导出）：</span>
+                  <div className="revision-steps">
+                    {chain.map((item) => (
+                      <span
+                        key={item.id}
+                        className={`revision-chip ${item.is_latest ? 'is-latest' : ''} ${item.status === 'superseded' ? 'is-superseded' : ''}`}
+                      >
+                        <b className="mono">v{item.revision_no}</b>
+                        <span className="mono tiny">{item.code}</span>
+                        <span className="tiny">n={formatInt(item.sample_size)} · ±{item.rel_error_pct.toFixed(2)}%</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               <div className="stat-grid three">
                 <StatTile label="点估计" value={formatMetric(selected.value_estimate, selected.unit, unitScale)} hint={`样本 ${formatInt(selected.sample_size)} 行`} tone="brass" />
@@ -207,6 +272,58 @@ export default function Qc() {
                 <RulerBar value={selected.rel_error_pct} target={selected.target_pct} caption="点估计相对误差 vs 精度标准" />
                 <RulerBar value={selected.ci_pct} target={selected.target_pct} caption="95% CI 半宽 vs 精度标准" />
               </div>
+
+              {selected.verdict === 'fail' ? (
+                <div className="topup-panel" data-testid="topup-panel">
+                  <div className="topup-head">
+                    <b>未达标处置：只给未达标层补未用样本（不重建方案、不作废已抽层）</b>
+                    {chainFrozen ? (
+                      <span className="tiny muted">该版本已被新版本替代，复核链冻结，请在最新版本上操作。</span>
+                    ) : (
+                      <button
+                        id="run-topup"
+                        className="btn btn-primary btn-sm"
+                        disabled={!canTopup || topup.busy}
+                        title={canTopup ? '' : '仅分析师/负责人可对最新未达标版本补样'}
+                        onClick={() => void topup.run()}
+                      >
+                        {topup.busy ? '补样并重算 …' : '对未达标层补样'}
+                      </button>
+                    )}
+                  </div>
+                  {!can(role, 'qc:topup') && !chainFrozen ? (
+                    <div className="tiny muted">业务方只读；补样由分析师发起、负责人同样可发起。容量不足时后端直接拒绝，不产生新样本。</div>
+                  ) : null}
+                  {topup.error ? <div className="form-error">{topup.error}</div> : null}
+                  {lastTopup ? (
+                    <div className={`topup-result is-${lastTopup.status}`}>
+                      <div className="tiny mono">
+                        补样单 #{lastTopup.id} · {lastTopup.status_label} · 第 {lastTopup.attempt_count} 次执行
+                        （幂等键 {lastTopup.idempotency_key.slice(0, 18)}…）
+                      </div>
+                      {lastTopup.reject_reason ? <div className="form-error">{lastTopup.reject_reason}</div> : null}
+                      <div className="topup-plan">
+                        {lastTopup.plan.map((row) => (
+                          <div key={row.code} className={`topup-row ${row.failed ? 'is-failed' : ''} ${!row.feasible ? 'is-infeasible' : ''}`}>
+                            <b>{row.label}</b>
+                            <span className="mono tiny">
+                              已抽 {row.had} → 目标 {row.target}（补 +{row.add}）· 未用余量 {row.available_unused}
+                            </span>
+                            <span className="tiny muted">{row.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                      {lastTopup.new_query ? (
+                        <div className="tiny ok">
+                          已生成新版本 {lastTopup.new_query.code}（v{lastTopup.new_query.revision_no}）：样本{' '}
+                          {formatInt(lastTopup.new_query.sample_size)} 行，CI ±{lastTopup.new_query.rel_error_pct.toFixed(2)}%，
+                          请在左侧自检记录选择新版本继续三级复核。
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
               <h4 className="section-title">检查项</h4>
               <div className="check-list">
@@ -232,9 +349,9 @@ export default function Qc() {
                 {SIGNOFF_STAGES.map((stage, index) => {
                   const stateOf = stageState(stage.value);
                   const signed = (selected.signoffs ?? []).find((item) => item.stage === stage.value);
-                  const canSign = stateOf === 'next' && role === STAGE_ROLE[stage.value];
+                  const canSign = !chainFrozen && stateOf === 'next' && role === STAGE_ROLE[stage.value];
                   return (
-                    <div key={stage.value} className={`signoff-step is-${stateOf}`}>
+                    <div key={stage.value} className={`signoff-step is-${stateOf}${chainFrozen ? ' is-frozen' : ''}`}>
                       <div className="signoff-index mono">{String(index + 1).padStart(2, '0')}</div>
                       <div className="signoff-copy">
                         <b>{stage.label}</b>
@@ -248,7 +365,9 @@ export default function Qc() {
                         ) : null}
                       </div>
                       <div className="signoff-action">
-                        {stateOf === 'done' ? (
+                        {chainFrozen ? (
+                          <span className="signoff-done mono">FROZEN</span>
+                        ) : stateOf === 'done' ? (
                           <span className="signoff-done mono">SIGNED</span>
                         ) : (
                           <button
@@ -267,9 +386,12 @@ export default function Qc() {
                 })}
               </div>
               <div className="tiny muted">
-                覆盖 {formatPct(selected.coverage_pct, 4)} · 最小层样本 {selected.min_stratum_sample} 行 · 复核状态：
-                {selected.review_state_label}
-                {selected.verdict === 'fail' ? ' · 结论未达标：提高目标置信/降低目标误差后重跑方案' : ''}
+                版本 v{selected.revision_no}（{selected.is_latest ? '最新' : '已被替代'}）· 覆盖 {formatPct(selected.coverage_pct, 4)} · 最小层样本{' '}
+                {selected.min_stratum_sample} 行 · 复核状态：{selected.review_state_label}
+                {selected.verdict === 'fail' && selected.is_latest
+                  ? ' · 结论未达标：对未达标层补样后自动重算并生成新版本，再走三级复核'
+                  : ''}
+                {!selected.exportable ? ' · 仅最新且三签通过版本可导出' : ''}
               </div>
               {sign.error ? <div className="form-error">{sign.error}</div> : null}
             </>

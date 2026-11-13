@@ -95,12 +95,23 @@ export interface StratumContribution {
   label: string;
   population: number;
   sample_size: number;
+  topped_up: number;
   sample_mean: number;
   contribution: number;
   ci_half: number;
   contribution_share_pct: number;
   variance_share_pct: number;
   verified: boolean;
+}
+
+export interface RevisionChainItem {
+  id: number;
+  code: string;
+  revision_no: number;
+  is_latest: boolean;
+  status: string;
+  sample_size: number;
+  rel_error_pct: number;
 }
 
 export interface ApproxQuery {
@@ -114,6 +125,13 @@ export interface ApproxQuery {
   metric_label: string;
   unit: string;
   filter_strata: string[];
+  revision_no: number;
+  root_query_id: number;
+  is_latest: boolean;
+  superseded_by_id: number | null;
+  status: string;
+  status_label: string;
+  revision_chain: RevisionChainItem[];
   sample_size: number;
   value_estimate: number;
   ci_low: number;
@@ -126,12 +144,46 @@ export interface ApproxQuery {
   sample_ms: number;
   truth_ms: number;
   full_scan_baseline_ms: number;
-  status: string;
   run_by: string;
   created_at: string;
   strata_detail: StratumContribution[];
   qc_id: number | null;
   qc_verdict: string | null;
+  qc_review_state: string | null;
+  exportable: boolean;
+}
+
+export interface TopupPlanRow {
+  code: string;
+  label: string;
+  population: number;
+  had: number;
+  min_required: number;
+  target: number;
+  add: number;
+  available_unused: number;
+  failed: boolean;
+  feasible: boolean;
+  reason: string;
+}
+
+export interface SampleTopup {
+  id: number;
+  query_id: number;
+  query_code: string | null;
+  new_query_id: number | null;
+  new_query: ApproxQuery | null;
+  idempotency_key: string;
+  status: string;
+  status_label: string;
+  plan: TopupPlanRow[];
+  applied: Array<{ code: string; added: number }>;
+  reject_reason: string | null;
+  attempt_count: number;
+  created_by: string;
+  created_at: string;
+  action?: string;
+  message?: string;
 }
 
 export interface CostSummary {
@@ -166,6 +218,9 @@ export interface QcCheck {
   code: string;
   query_id: number;
   query_code: string;
+  revision_no: number;
+  is_latest: boolean;
+  superseded_by_id: number | null;
   dataset_name: string;
   metric_label: string;
   target_pct: number;
@@ -186,6 +241,7 @@ export interface QcCheck {
   value_estimate: number;
   true_value: number;
   unit: string;
+  exportable: boolean;
 }
 
 export interface HealthInfo {

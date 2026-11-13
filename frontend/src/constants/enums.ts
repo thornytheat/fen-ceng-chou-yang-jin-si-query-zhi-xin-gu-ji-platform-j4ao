@@ -12,6 +12,8 @@ export const PLAN_STATUS: Record<string, string> = {
 
 export const QUERY_STATUS: Record<string, string> = {
   completed: '已完成',
+  replenishing: '补样中',
+  superseded: '已替代',
   failed: '失败',
 };
 
@@ -23,6 +25,13 @@ export const QC_VERDICT: Record<string, string> = {
 export const REVIEW_STATE: Record<string, string> = {
   pending: '待签',
   confirmed: '三签完成',
+  superseded: '版本已替代',
+};
+
+export const TOPUP_STATUS: Record<string, string> = {
+  running: '补样中',
+  done: '补样完成',
+  rejected: '容量不足已拒绝',
 };
 
 export const SIGNOFF_STAGES = [

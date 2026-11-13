@@ -79,6 +79,36 @@ def run_query(
     if not meta:
         raise AppError("DATASET_EMPTY", 422, detail="no strata selected")
 
+    # 幂等：同一方案 + 同一过滤范围 + 同一执行人的已完成最新版本，重跑不新增样本或结果，直接回放。
+    candidates = db.scalars(
+        select(ApproxQuery)
+        .where(
+            ApproxQuery.plan_id == plan.id,
+            ApproxQuery.run_by == actor["email"],
+            ApproxQuery.is_latest.is_(True),
+            ApproxQuery.status == QueryStatus.COMPLETED.value,
+        )
+        .order_by(ApproxQuery.id.desc())
+        .limit(20)
+    ).all()
+    replay = next(
+        (row for row in candidates if sorted(row.filter_strata or []) == sorted(wanted)),
+        None,
+    )
+    if replay is not None:
+        audit_service.record(
+            db,
+            actor_email=actor["email"],
+            actor_role=actor["role"],
+            action="query.run.idempotent",
+            entity="approx_query",
+            entity_id=str(replay.id),
+            detail={"code": replay.code, "reason": "identical request replayed"},
+            ip=ip,
+        )
+        db.flush()
+        return replay
+
     alloc = {row["code"]: int(row["sample_size"]) for row in (plan.allocation or [])}
     samples: dict[str, list[float]] = {}
     started = time.perf_counter()
@@ -119,6 +149,10 @@ def run_query(
         plan_id=plan.id,
         dataset_id=dataset.id,
         code=_next_code(db),
+        root_query_id=None,
+        revision_no=1,
+        superseded_by_id=None,
+        is_latest=True,
         filter_strata=wanted,
         sample_size=int(estimate["sample_size"]),
         value_estimate_minor=int(round(estimate["estimate_minor"])),
@@ -154,6 +188,8 @@ def run_query(
     row.created_at = datetime.utcnow()
     db.add(row)
     db.flush()
+    # 根查询：root 指向自身，便于 uq_query_revision 与版本链统一查询
+    row.root_query_id = row.id
     audit_service.record(
         db,
         actor_email=actor["email"],
@@ -184,9 +220,22 @@ def query_out(db: Session, row: ApproxQuery) -> dict:
     ci_half = (row.ci_high_minor - row.ci_low_minor) / 2 / scale
     baseline = max(1, row.full_scan_baseline_ms)
     sample_ms = float(row.sample_ms)
+    from src.constants.enums import QUERY_STATUS_LABELS, ReviewState
     from src.models.qc_check import QcCheck
 
     qc = db.scalar(select(QcCheck).where(QcCheck.query_id == row.id))
+    # 同根版本链（含自身），按版本号升序，供页面展示替代关系
+    root_id = row.root_query_id or row.id
+    chain = list(
+        db.scalars(
+            select(ApproxQuery)
+            .where(ApproxQuery.root_query_id == root_id)
+            .order_by(ApproxQuery.revision_no.asc())
+        )
+    )
+    exportable = bool(
+        row.is_latest and qc is not None and qc.verdict == "pass" and qc.review_state == ReviewState.CONFIRMED.value
+    )
     detail = []
     for item in row.strata_detail or []:
         detail.append(
@@ -195,6 +244,7 @@ def query_out(db: Session, row: ApproxQuery) -> dict:
                 "label": item.get("label"),
                 "population": int(item.get("population", 0)),
                 "sample_size": int(item.get("sample_size", 0)),
+                "topped_up": int(item.get("topped_up", 0) or 0),
                 "sample_mean": round(float(item.get("sample_mean", 0)) / scale, 2),
                 "contribution": round(float(item.get("contribution", 0)) / scale, 2),
                 "ci_half": round(float(item.get("ci_half", 0)) / scale, 2),
@@ -214,6 +264,24 @@ def query_out(db: Session, row: ApproxQuery) -> dict:
         "metric_label": dataset.metric_label,
         "unit": dataset.unit,
         "filter_strata": list(row.filter_strata or []),
+        "revision_no": int(row.revision_no or 1),
+        "root_query_id": root_id,
+        "is_latest": bool(row.is_latest),
+        "superseded_by_id": row.superseded_by_id,
+        "status": row.status,
+        "status_label": QUERY_STATUS_LABELS.get(row.status, row.status),
+        "revision_chain": [
+            {
+                "id": item.id,
+                "code": item.code,
+                "revision_no": int(item.revision_no or 1),
+                "is_latest": bool(item.is_latest),
+                "status": item.status,
+                "sample_size": item.sample_size,
+                "rel_error_pct": float(item.rel_error_pct),
+            }
+            for item in chain
+        ],
         "sample_size": row.sample_size,
         "value_estimate": round(row.value_estimate_minor / scale, 2),
         "ci_low": round(row.ci_low_minor / scale, 2),
@@ -226,10 +294,11 @@ def query_out(db: Session, row: ApproxQuery) -> dict:
         "sample_ms": sample_ms,
         "truth_ms": float(row.truth_ms),
         "full_scan_baseline_ms": row.full_scan_baseline_ms,
-        "status": row.status,
         "run_by": row.run_by,
         "created_at": local_iso(row.created_at),
         "strata_detail": detail,
         "qc_id": qc.id if qc else None,
         "qc_verdict": qc.verdict if qc else None,
+        "qc_review_state": qc.review_state if qc else None,
+        "exportable": exportable,
     }

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from src.constants.enums import ReviewState
+from src.models.qc_check import QcCheck
 from src.services import export_service, qc_service, query_service
+from src.utils.errors import AppError
 
 
 def list_queries(db: Session, plan_id: int | None = None, limit: int = 40) -> dict:
@@ -25,11 +29,14 @@ def run_query(db: Session, payload, actor: dict, ip: str | None = None) -> dict:
 
 def export_query(db: Session, query_id: int) -> Response:
     row = query_service.get_query(db, query_id)
-    from sqlalchemy import select
-
-    from src.models.qc_check import QcCheck
-
     qc = db.scalar(select(QcCheck).where(QcCheck.query_id == row.id))
+    # 页面、自检、导出三处口径一致：只有「最新版本 + 自检达标 + 三级复核通过」可导出。
+    if qc is None:
+        raise AppError("EXPORT_NOT_READY", 409, detail="该版本尚未完成精度自检")
+    if not row.is_latest:
+        raise AppError("EXPORT_NOT_READY", 409, detail="旧版本已被替代，仅最新复核通过版本可导出")
+    if qc.verdict != "pass" or qc.review_state != ReviewState.CONFIRMED.value:
+        raise AppError("EXPORT_NOT_READY", 409, detail="自检达标且三级复核全部通过后才能导出")
     filename, content = export_service.build_estimate_markdown(row, qc)
     return Response(
         content=content.encode("utf-8"),

@@ -13,6 +13,43 @@ class QcRunRequest(BaseModel):
     target_pct: float | None = Field(default=None, ge=0.5, le=20)
 
 
+class TopupRequest(BaseModel):
+    query_id: int
+
+
+class TopupPlanRowOut(BaseModel):
+    code: str
+    label: str
+    population: int
+    had: int
+    min_required: int
+    target: int
+    add: int
+    available_unused: int
+    failed: bool
+    feasible: bool
+    reason: str
+
+
+class TopupOut(BaseModel):
+    id: int
+    query_id: int
+    query_code: str | None
+    new_query_id: int | None
+    new_query: dict | None = None
+    idempotency_key: str
+    status: str
+    status_label: str
+    plan: list[TopupPlanRowOut]
+    applied: list[dict[str, Any]]
+    reject_reason: str | None
+    attempt_count: int
+    created_by: str
+    created_at: str
+    action: str | None = None
+    message: str | None = None
+
+
 class QcCheckItemOut(BaseModel):
     code: str
     label: str
@@ -44,6 +81,9 @@ class QcOut(BaseModel):
     code: str
     query_id: int
     query_code: str
+    revision_no: int
+    is_latest: bool
+    superseded_by_id: int | None = None
     dataset_name: str
     metric_label: str
     target_pct: float
@@ -64,6 +104,7 @@ class QcOut(BaseModel):
     value_estimate: float
     true_value: float
     unit: str
+    exportable: bool = False
 
 
 class SignoffResultOut(BaseModel):

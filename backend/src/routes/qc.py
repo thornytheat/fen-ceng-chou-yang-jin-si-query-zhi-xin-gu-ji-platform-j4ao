@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from src.config.database import get_db
 from src.controllers import qc_controller
 from src.middlewares.rbac import principal_of, require_permission
-from src.schemas.qc import QcOut, QcRunRequest, SignoffRequest, SignoffResultOut
+from src.schemas.qc import QcOut, QcRunRequest, SignoffRequest, SignoffResultOut, TopupOut, TopupRequest
 
 router = APIRouter(tags=["qc"])
 
@@ -20,6 +20,16 @@ def list_checks(
     _=Depends(require_permission("qc:read")),
 ):
     return qc_controller.list_checks(db, limit)
+
+
+@router.get("/qc/topups")
+def list_topups(
+    request: Request,
+    limit: int = Query(default=40, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("qc:read")),
+):
+    return qc_controller.list_topups(db, limit)
 
 
 @router.get("/qc/{qc_id}", response_model=QcOut)
@@ -36,6 +46,17 @@ def run_check(
 ):
     ip = request.client.host if request.client else None
     return qc_controller.run_check(db, payload, actor, ip)
+
+
+@router.post("/qc/topup", response_model=TopupOut, status_code=201)
+def run_topup(
+    payload: TopupRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor=Depends(require_permission("qc:topup")),
+):
+    ip = request.client.host if request.client else None
+    return qc_controller.run_topup(db, payload, actor, ip)
 
 
 @router.post("/qc/{qc_id}/signoff", response_model=SignoffResultOut)
